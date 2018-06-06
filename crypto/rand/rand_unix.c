@@ -29,6 +29,8 @@
 #endif
 #ifdef OPENSSL_SYS_UNIX
 # include <sys/types.h>
+# include <sys/stat.h>
+# include <fcntl.h>
 # include <unistd.h>
 # include <sys/time.h>
 
@@ -153,6 +155,14 @@ size_t rand_pool_acquire_entropy(RAND_POOL *pool)
     return rand_pool_entropy_available(pool);
 }
 
+void rand_pool_cleanup(void)
+{
+}
+
+void rand_pool_keep_random_devices_open(int keep)
+{
+}
+
 # else
 
 #  if defined(OPENSSL_RAND_SEED_EGD) && \
@@ -273,6 +283,111 @@ int syscall_random(void *buf, size_t buflen)
     return -1;
 }
 
+#if !defined(OPENSSL_RAND_SEED_NONE) && defined(OPENSSL_RAND_SEED_DEVRANDOM)
+static const char *devrandom_paths[] = { DEVRANDOM };
+static struct {
+    int fd;
+    dev_t dev;
+    ino_t ino;
+    mode_t mode;
+    dev_t rdev;
+} devrandom_files[OSSL_NELEM(devrandom_paths)];
+static int devrandom_keep_open = 1;
+
+/*
+ * Verify that the file descriptor associated with the random source is
+ * still valid. The rationale for doing this is the fact that it is not
+ * uncommon for daemons to close all open file handles when daemonizing. So
+ * the handle might have been closed or even reused for opening another file.
+ */
+static int check_devrandom_device(size_t n)
+{
+    struct stat st;
+    const int fd = devrandom_files[n].fd;
+
+    return fd != -1
+           && fstat(fd, &st) != -1
+           && devrandom_files[n].dev == st.st_dev
+           && devrandom_files[n].ino == st.st_ino
+           && devrandom_files[n].mode == st.st_mode
+           && devrandom_files[n].rdev == st.st_rdev;
+}
+
+/*
+ * Open a random device if requried and return the FD or -1 on error
+ */
+static int get_devrandom_device(size_t n)
+{
+    if (!check_devrandom_device(n)) {
+        struct stat st;
+        const int fd = open(devrandom_paths[n], O_RDONLY);
+
+        if (fd != -1 && fstat(fd, &st) != -1) {
+            devrandom_files[n].fd = fd;
+            devrandom_files[n].dev = st.st_dev;
+            devrandom_files[n].ino = st.st_ino;
+            devrandom_files[n].mode = st.st_mode;
+            devrandom_files[n].rdev = st.st_rdev;
+        } else {
+            devrandom_files[n].fd = -1;
+        }
+    }
+    return devrandom_files[n].fd;
+}
+
+/*
+ * Close a random device making sure it is a random device
+ */
+static void close_devrandom_device(size_t n)
+{
+    if (check_devrandom_device(n))
+        close(devrandom_files[n].fd);
+    devrandom_files[n].fd = -1;
+}
+
+int rand_pool_init(void)
+{
+    size_t i;
+
+    for (i = 0; i < OSSL_NELEM(devrandom_files); i++) {
+        devrandom_files[i].fd = -1;
+        (void)get_devrandom_device(i);
+    }
+    return 1;
+}
+
+void rand_pool_cleanup(void)
+{
+    size_t i;
+
+    for (i = 0; i < OSSL_NELEM(devrandom_files); i++)
+        close_devrandom_device(i);
+    devrandom_keep_open = 1;
+}
+
+void rand_pool_keep_random_devices_open(int keep)
+{
+    if (!keep)
+        rand_pool_cleanup();
+    devrandom_keep_open = keep;
+}
+
+#else
+
+int rand_pool_init(void)
+{
+    return 1;
+}
+
+void rand_pool_cleanup(void)
+{
+}
+
+void rand_pool_keep_random_devices_open(int keep)
+{
+}
+#endif
+
 /*
  * Try the various seeding methods in turn, exit when successful.
  *
@@ -323,30 +438,33 @@ size_t rand_pool_acquire_entropy(RAND_POOL *pool)
 
 #   ifdef OPENSSL_RAND_SEED_DEVRANDOM
     bytes_needed = rand_pool_bytes_needed(pool, 1 /*entropy_factor*/);
-    if (bytes_needed > 0) {
-        static const char *paths[] = { DEVRANDOM, NULL };
-        FILE *fp;
-        int i;
+    {
+        size_t i;
 
-        for (i = 0; paths[i] != NULL; i++) {
-            if ((fp = fopen(paths[i], "rb")) == NULL)
+        for (i = 0; bytes_needed > 0 && i < OSSL_NELEM(devrandom_paths); i++) {
+            const int fd = get_devrandom_device(i);
+
+            if (fd == -1)
                 continue;
-            setbuf(fp, NULL);
             buffer = rand_pool_add_begin(pool, bytes_needed);
             if (buffer != NULL) {
-                size_t bytes = 0;
-                if (fread(buffer, 1, bytes_needed, fp) == bytes_needed)
-                    bytes = bytes_needed;
+                const ssize_t n = read(fd, buffer, bytes_needed);
 
-                rand_pool_add_end(pool, bytes, 8 * bytes);
-                entropy_available = rand_pool_entropy_available(pool);
+                if (n <= 0) {
+                    close_devrandom_device(i);
+                    continue;
+                }
+
+                rand_pool_add_end(pool, n, 8 * n);
             }
-            fclose(fp);
-            if (entropy_available > 0)
-                return entropy_available;
+            if (!devrandom_keep_open)
+                close_devrandom_device(i);
 
             bytes_needed = rand_pool_bytes_needed(pool, 1 /*entropy_factor*/);
         }
+        entropy_available = rand_pool_entropy_available(pool);
+        if (entropy_available > 0)
+            return entropy_available;
     }
 #   endif
 
@@ -430,7 +548,6 @@ int rand_pool_add_additional_data(RAND_POOL *pool)
 
     return rand_pool_add(pool, (unsigned char *)&data, sizeof(data), 0);
 }
-
 
 
 /*
