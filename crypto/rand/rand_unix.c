@@ -297,8 +297,9 @@ static int keep_random_devices_open = 1;
 /*
  * Verify that the file descriptor associated with the random source is
  * still valid. The rationale for doing this is the fact that it is not
- * uncommon for daemons to close all open file handles when daemonizing. So
- * the handle might have been closed or even reused for opening another file.
+ * uncommon for daemons to close all open file handles when daemonizing.
+ * So the handle might have been closed or even reused for opening
+ * another file.
  */
 static int check_random_device(struct random_device * rd)
 {
@@ -313,28 +314,32 @@ static int check_random_device(struct random_device * rd)
 }
 
 /*
- * Open a random device if required and return the FD or -1 on error
+ * Open a random device if required and return its file descriptor or -1 on error
  */
 static int get_random_device(size_t n)
 {
+    struct stat st;
     struct random_device * rd = &random_devices[n];
 
-    if (!check_random_device(rd)) {
-        struct stat st;
-        const int fd = open(random_device_paths[n], O_RDONLY);
+    /* reuse existing file descriptor if it is (still) valid */
+    if (check_random_device(rd))
+        return rd->fd;
 
-        if (fd != -1 && fstat(fd, &st) != -1) {
-            rd->fd = fd;
-            rd->dev = st.st_dev;
-            rd->ino = st.st_ino;
-            rd->mode = st.st_mode;
-            rd->rdev = st.st_rdev;
-        } else {
-            if (fd != -1)
-                close(fd);
-            rd->fd = -1;
-        }
+    /* open the random device ... */
+    if ((rd->fd = open(random_device_paths[n], O_RDONLY)) == -1)
+        return rd->fd;
+
+    /* ... and cache its statistics */
+    if (fstat(rd->fd, &st) != -1) {
+        rd->dev = st.st_dev;
+        rd->ino = st.st_ino;
+        rd->mode = st.st_mode;
+        rd->rdev = st.st_rdev;
+    } else {
+        close(rd->fd);
+        rd->fd = -1;
     }
+
     return rd->fd;
 }
 
