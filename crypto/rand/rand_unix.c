@@ -285,7 +285,7 @@ int syscall_random(void *buf, size_t buflen)
 
 #if !defined(OPENSSL_RAND_SEED_NONE) && defined(OPENSSL_RAND_SEED_DEVRANDOM)
 static const char *random_device_paths[] = { DEVRANDOM };
-static struct random_device_stat {
+static struct random_device {
     int fd;
     dev_t dev;
     ino_t ino;
@@ -300,41 +300,42 @@ static int keep_random_devices_open = 1;
  * uncommon for daemons to close all open file handles when daemonizing. So
  * the handle might have been closed or even reused for opening another file.
  */
-static int check_random_device(size_t n)
+static int check_random_device(struct random_device * rd)
 {
     struct stat st;
-    const int fd = random_devices[n].fd;
 
-    return fd != -1
-           && fstat(fd, &st) != -1
-           && random_devices[n].dev == st.st_dev
-           && random_devices[n].ino == st.st_ino
-           && random_devices[n].mode == st.st_mode
-           && random_devices[n].rdev == st.st_rdev;
+    return rd->fd != -1
+           && fstat(rd->fd, &st) != -1
+           && rd->dev == st.st_dev
+           && rd->ino == st.st_ino
+           && rd->mode == st.st_mode
+           && rd->rdev == st.st_rdev;
 }
 
 /*
- * Open a random device if requried and return the FD or -1 on error
+ * Open a random device if required and return the FD or -1 on error
  */
 static int get_random_device(size_t n)
 {
-    if (!check_random_device(n)) {
+    struct random_device * rd = &random_devices[n];
+
+    if (!check_random_device(rd)) {
         struct stat st;
         const int fd = open(random_device_paths[n], O_RDONLY);
 
         if (fd != -1 && fstat(fd, &st) != -1) {
-            random_devices[n].fd = fd;
-            random_devices[n].dev = st.st_dev;
-            random_devices[n].ino = st.st_ino;
-            random_devices[n].mode = st.st_mode;
-            random_devices[n].rdev = st.st_rdev;
+            rd->fd = fd;
+            rd->dev = st.st_dev;
+            rd->ino = st.st_ino;
+            rd->mode = st.st_mode;
+            rd->rdev = st.st_rdev;
         } else {
             if (fd != -1)
                 close(fd);
-            random_devices[n].fd = -1;
+            rd->fd = -1;
         }
     }
-    return random_devices[n].fd;
+    return rd->fd;
 }
 
 /*
@@ -342,9 +343,11 @@ static int get_random_device(size_t n)
  */
 static void close_random_device(size_t n)
 {
-    if (check_random_device(n))
-        close(random_devices[n].fd);
-    random_devices[n].fd = -1;
+    struct random_device * rd = &random_devices[n];
+
+    if (check_random_device(rd))
+        close(rd->fd);
+    rd->fd = -1;
 }
 
 static void open_random_devices(void)
