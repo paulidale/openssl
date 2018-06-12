@@ -329,6 +329,8 @@ static int get_devrandom_device(size_t n)
             devrandom_files[n].mode = st.st_mode;
             devrandom_files[n].rdev = st.st_rdev;
         } else {
+            if (fd != -1)
+                close(fd);
             devrandom_files[n].fd = -1;
         }
     }
@@ -345,14 +347,21 @@ static void close_devrandom_device(size_t n)
     devrandom_files[n].fd = -1;
 }
 
+static void open_devrandom_devices(void)
+{
+    size_t i;
+
+    for (i = 0; i < OSSL_NELEM(devrandom_files); i++)
+        (void)get_devrandom_device(i);
+}
+
 int rand_pool_init(void)
 {
     size_t i;
 
-    for (i = 0; i < OSSL_NELEM(devrandom_files); i++) {
+    for (i = 0; i < OSSL_NELEM(devrandom_files); i++)
         devrandom_files[i].fd = -1;
-        (void)get_devrandom_device(i);
-    }
+    open_devrandom_devices();
     return 1;
 }
 
@@ -362,12 +371,13 @@ void rand_pool_cleanup(void)
 
     for (i = 0; i < OSSL_NELEM(devrandom_files); i++)
         close_devrandom_device(i);
-    devrandom_keep_open = 1;
 }
 
 void rand_pool_keep_random_devices_open(int keep)
 {
-    if (!keep)
+    if (keep)
+        open_devrandom_devices();
+    else
         rand_pool_cleanup();
     devrandom_keep_open = keep;
 }

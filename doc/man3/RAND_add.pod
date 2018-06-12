@@ -57,10 +57,11 @@ should consider using L<RAND_load_file(3)> instead.
 
 RAND_seed() is equivalent to RAND_add() with B<randomness> set to B<num>.
 
-RAND_keep_random_devices_open() use used to control the resource use
-of the random device seed sources. Some seed sources maintain open file
-descriptors which allow them to operate in chroot(2) environment without
-the associated device node being available.
+RAND_keep_random_devices_open() use used to control the resource use of
+the random device seed sources. Some seed sources are able to maintain
+open file descriptors which allow them to operate in chroot(2) jails
+without the associated device node being available. This call must be
+made before calling chroot(2).
 
 RAND_event() and RAND_screen() are equivalent to RAND_poll() and exist
 for compatibility reasons only. See HISTORY section below.
