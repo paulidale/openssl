@@ -284,15 +284,15 @@ int syscall_random(void *buf, size_t buflen)
 }
 
 #if !defined(OPENSSL_RAND_SEED_NONE) && defined(OPENSSL_RAND_SEED_DEVRANDOM)
-static const char *devrandom_paths[] = { DEVRANDOM };
-static struct {
+static const char *random_device_paths[] = { DEVRANDOM };
+static struct random_device_stat {
     int fd;
     dev_t dev;
     ino_t ino;
     mode_t mode;
     dev_t rdev;
-} devrandom_files[OSSL_NELEM(devrandom_paths)];
-static int devrandom_keep_open = 1;
+} random_devices[OSSL_NELEM(random_device_paths)];
+static int keep_random_devices_open = 1;
 
 /*
  * Verify that the file descriptor associated with the random source is
@@ -300,68 +300,68 @@ static int devrandom_keep_open = 1;
  * uncommon for daemons to close all open file handles when daemonizing. So
  * the handle might have been closed or even reused for opening another file.
  */
-static int check_devrandom_device(size_t n)
+static int check_random_device(size_t n)
 {
     struct stat st;
-    const int fd = devrandom_files[n].fd;
+    const int fd = random_devices[n].fd;
 
     return fd != -1
            && fstat(fd, &st) != -1
-           && devrandom_files[n].dev == st.st_dev
-           && devrandom_files[n].ino == st.st_ino
-           && devrandom_files[n].mode == st.st_mode
-           && devrandom_files[n].rdev == st.st_rdev;
+           && random_devices[n].dev == st.st_dev
+           && random_devices[n].ino == st.st_ino
+           && random_devices[n].mode == st.st_mode
+           && random_devices[n].rdev == st.st_rdev;
 }
 
 /*
  * Open a random device if requried and return the FD or -1 on error
  */
-static int get_devrandom_device(size_t n)
+static int get_random_device(size_t n)
 {
-    if (!check_devrandom_device(n)) {
+    if (!check_random_device(n)) {
         struct stat st;
-        const int fd = open(devrandom_paths[n], O_RDONLY);
+        const int fd = open(random_device_paths[n], O_RDONLY);
 
         if (fd != -1 && fstat(fd, &st) != -1) {
-            devrandom_files[n].fd = fd;
-            devrandom_files[n].dev = st.st_dev;
-            devrandom_files[n].ino = st.st_ino;
-            devrandom_files[n].mode = st.st_mode;
-            devrandom_files[n].rdev = st.st_rdev;
+            random_devices[n].fd = fd;
+            random_devices[n].dev = st.st_dev;
+            random_devices[n].ino = st.st_ino;
+            random_devices[n].mode = st.st_mode;
+            random_devices[n].rdev = st.st_rdev;
         } else {
             if (fd != -1)
                 close(fd);
-            devrandom_files[n].fd = -1;
+            random_devices[n].fd = -1;
         }
     }
-    return devrandom_files[n].fd;
+    return random_devices[n].fd;
 }
 
 /*
  * Close a random device making sure it is a random device
  */
-static void close_devrandom_device(size_t n)
+static void close_random_device(size_t n)
 {
-    if (check_devrandom_device(n))
-        close(devrandom_files[n].fd);
-    devrandom_files[n].fd = -1;
+    if (check_random_device(n))
+        close(random_devices[n].fd);
+    random_devices[n].fd = -1;
 }
 
-static void open_devrandom_devices(void)
+static void open_random_devices(void)
 {
     size_t i;
 
-    for (i = 0; i < OSSL_NELEM(devrandom_files); i++)
-        (void)get_devrandom_device(i);
+    for (i = 0; i < OSSL_NELEM(random_devices); i++)
+        (void)get_random_device(i);
 }
 
 int rand_pool_init(void)
 {
     size_t i;
 
-    for (i = 0; i < OSSL_NELEM(devrandom_files); i++)
-        devrandom_files[i].fd = -1;
-    open_devrandom_devices();
+    for (i = 0; i < OSSL_NELEM(random_devices); i++)
+        random_devices[i].fd = -1;
+    open_random_devices();
     return 1;
 }
 
@@ -369,17 +369,17 @@ void rand_pool_cleanup(void)
 {
     size_t i;
 
-    for (i = 0; i < OSSL_NELEM(devrandom_files); i++)
-        close_devrandom_device(i);
+    for (i = 0; i < OSSL_NELEM(random_devices); i++)
+        close_random_device(i);
 }
 
 void rand_pool_keep_random_devices_open(int keep)
 {
     if (keep)
-        open_devrandom_devices();
+        open_random_devices();
     else
         rand_pool_cleanup();
-    devrandom_keep_open = keep;
+    keep_random_devices_open = keep;
 }
 
 #else
@@ -451,8 +451,8 @@ size_t rand_pool_acquire_entropy(RAND_POOL *pool)
     {
         size_t i;
 
-        for (i = 0; bytes_needed > 0 && i < OSSL_NELEM(devrandom_paths); i++) {
-            const int fd = get_devrandom_device(i);
+        for (i = 0; bytes_needed > 0 && i < OSSL_NELEM(random_device_paths); i++) {
+            const int fd = get_random_device(i);
 
             if (fd == -1)
                 continue;
@@ -461,14 +461,14 @@ size_t rand_pool_acquire_entropy(RAND_POOL *pool)
                 const ssize_t n = read(fd, buffer, bytes_needed);
 
                 if (n <= 0) {
-                    close_devrandom_device(i);
+                    close_random_device(i);
                     continue;
                 }
 
                 rand_pool_add_end(pool, n, 8 * n);
             }
-            if (!devrandom_keep_open)
-                close_devrandom_device(i);
+            if (!keep_random_devices_open)
+                close_random_device(i);
 
             bytes_needed = rand_pool_bytes_needed(pool, 1 /*entropy_factor*/);
         }
